@@ -2,13 +2,6 @@ services:
   - type: web
     name: volatility-574-tracker
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-      - key: SHEET_ID
-        value: 15Cfcs2QLL9kxapoutu8iaRwizGIwxHBukEV2C--gbVY
-      - key: BROWN_J_URL
-        value: https://script.google.com/macros/s/AKfycbwIMXA0PE4hfAC0ZqzB48PDRjHn1b1QIDqrOLmeH2xpUfIxIq-FF-gsfBBhwCJ51sgg/exec
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --threads 4
+    plan: free
