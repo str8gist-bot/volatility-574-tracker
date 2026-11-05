@@ -119,43 +119,84 @@ def parse_gviz_json(text):
         print(f"[SENTIMENT] gviz parse error: {e}")
         return None
 
+
 def fetch_sheet_tab_gviz(sheet_id, tab_name):
+    """Try 3 methods: gviz json, gviz csv, direct export csv - for public sheets"""
+    # Method 1: gviz json
     try:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:json&sheet={tab_name}"
         r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            return None
-        j = parse_gviz_json(r.text)
-        if not j:
-            return None
-        table = j.get("table", {})
-        cols = [c.get("label","") for c in table.get("cols",[])]
-        rows = []
-        for row in table.get("rows",[]):
-            vals = []
-            for c in row.get("c",[]):
-                vals.append(c.get("v","") if c and c.get("v") is not None else (c.get("f","") if c else ""))
-            rows.append(vals)
-        return {"cols": cols, "rows": rows}
+        if r.status_code == 200 and "setResponse" in r.text:
+            j = parse_gviz_json(r.text)
+            if j:
+                table = j.get("table", {})
+                cols = [c.get("label","") for c in table.get("cols",[])]
+                rows = []
+                for row in table.get("rows",[]):
+                    vals = []
+                    for c in row.get("c",[]):
+                        vals.append(c.get("v","") if c and c.get("v") is not None else (c.get("f","") if c else ""))
+                    rows.append(vals)
+                if rows:
+                    print(f"[SENTIMENT] gviz JSON OK {tab_name} {len(rows)} rows")
+                    return {"cols": cols, "rows": rows}
     except Exception as e:
-        print(f"[SENTIMENT] gviz fetch {tab_name} failed: {e}")
-        return None
+        print(f"[SENTIMENT] gviz json {tab_name} failed: {e}")
+    # Method 2: export csv
+    try:
+        url2 = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={tab_name}"
+        r2 = requests.get(url2, timeout=10)
+        if r2.status_code == 200 and len(r2.text) > 20:
+            import csv, io
+            f = io.StringIO(r2.text)
+            reader = csv.reader(f)
+            rows = list(reader)
+            if rows:
+                cols = rows[0]
+                data_rows = rows[1:]
+                print(f"[SENTIMENT] gviz CSV OK {tab_name} {len(data_rows)} rows")
+                return {"cols": cols, "rows": data_rows}
+    except Exception as e:
+        print(f"[SENTIMENT] gviz csv {tab_name} failed: {e}")
+    # Method 3: direct export
+    try:
+        url3 = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&sheet={tab_name}"
+        r3 = requests.get(url3, timeout=10)
+        if r3.status_code == 200 and len(r3.text) > 20:
+            import csv, io
+            f = io.StringIO(r3.text)
+            reader = csv.reader(f)
+            rows = list(reader)
+            if rows:
+                cols = rows[0]
+                data_rows = rows[1:]
+                print(f"[SENTIMENT] export CSV OK {tab_name} {len(data_rows)} rows")
+                return {"cols": cols, "rows": data_rows}
+    except Exception as e:
+        print(f"[SENTIMENT] export csv {tab_name} failed: {e}")
+    print(f"[SENTIMENT] All 3 methods failed for {tab_name} - Is sheet shared Anyone with link Viewer?")
+    return None
 
 def fetch_sentiment_from_sheet():
     global SENTIMENT_CACHE, SENTIMENT_RAW, LAST_SENTIMENT_FETCH, SENTIMENT_STATUS
     now = time.time()
-    if now - LAST_SENTIMENT_FETCH < 65:
+    if now - LAST_SENTIMENT_FETCH < 30:  # faster retry 30s for V3
         return
     LAST_SENTIMENT_FETCH = now
     try:
         sheet_id = CONFIG["SHEET_ID"]
+        print(f"[SENTIMENT] Fetching Sheet {sheet_id} ...")
         synced = fetch_sheet_tab_gviz(sheet_id, "Synced_View")
         stock_master = fetch_sheet_tab_gviz(sheet_id, "Stock_Master_DB_Stocks_Keywords")
+        print(f"[SENTIMENT] Synced_View: {len(synced['rows']) if synced else 0} rows, Stock_Master: {len(stock_master['rows']) if stock_master else 0} rows")
         new_cache = {}
+        # Synced_View parsing - new format from your ingest: col A has TICKER | CALL | REASON lines?
         if synced and synced["rows"]:
             raw_text = "\n".join([" ".join([str(x) for x in row]) for row in synced["rows"]])
             SENTIMENT_RAW = raw_text[:5000]
-            for line in raw_text.split("\n"):
+            # Try new format: each row is like FSL | STRONG BUY | reason OR just single column with full line
+            for row in synced["rows"]:
+                line = " ".join([str(x) for x in row])
                 m = re.search(r'([A-Z]{2,20})\s*\|\s*(STRONG BUY|BUY|HOLD|SELL|STRONG SELL)\s*\|\s*(.*)', line, re.I)
                 if m:
                     ticker = m.group(1).upper()
@@ -163,52 +204,92 @@ def fetch_sentiment_from_sheet():
                     reason = m.group(3)[:200]
                     norm = normalize_sym(ticker)
                     new_cache[norm] = {"call": call, "reason": reason, "keyword_match": "", "score": 3 if "STRONG" in call else (2 if "BUY" in call else (-2 if "SELL" in call else 0)), "source": "Synced_View", "orig": ticker}
+            # Also try old ingest format: first row is header with stocks list? Your ingest output shows list of stocks in single cell
+            if not new_cache:
+                # Your Brown J output at 23:42 shows stocks in format "STOCKS: SAREGAMA (2026-11-04), ..."
+                # Parse that fallback
+                for row in synced["rows"]:
+                    for cell in row:
+                        cell_str = str(cell)
+                        # Find patterns like RELIANCE (2026-11-04) etc as stock tickers
+                        for match in re.finditer(r'([A-Z]{3,15})\s*\(2026', cell_str):
+                            ticker = match.group(1)
+                            if len(ticker) >=3:
+                                norm = normalize_sym(ticker)
+                                if norm not in new_cache:
+                                    new_cache[norm] = {"call": "BUY", "reason": f"From Synced_View ingest {cell_str[:60]}", "keyword_match": "INGEST", "score": 1, "source": "Synced_View_Raw", "orig": ticker}
+        # Stock_Master parsing - your ingest at 23:42 created this
         if stock_master and stock_master["rows"]:
             cols = [c.lower() for c in stock_master["cols"]]
             try:
-                t_idx = next((i for i,c in enumerate(cols) if "ticker" in c), 1)
-                type_idx = next((i for i,c in enumerate(cols) if "type" in c), 2)
-                subj_idx = next((i for i,c in enumerate(cols) if "subject" in c), 4)
+                t_idx = next((i for i,c in enumerate(cols) if "ticker" in c), 0)
+                type_idx = next((i for i,c in enumerate(cols) if "type" in c), 1)
+                subj_idx = next((i for i,c in enumerate(cols) if "subject" in c or "keyword" in c or "reason" in c), 2)
+                date_idx = next((i for i,c in enumerate(cols) if "date" in c), 3)
             except:
-                t_idx, type_idx, subj_idx = 1,2,4
-            last_rows = stock_master["rows"][-80:]
-            stocks = [r for r in last_rows if len(r) > type_idx and "STOCK_TICKER" in str(r[type_idx]).upper()]
-            keywords = [r for r in last_rows if len(r) > type_idx and ("MARKET_KEYWORD" in str(r[type_idx]).upper() or "KEYWORD" in str(r[type_idx]).upper())]
-            positive_kw = ["EXCEEDS","POSITIVE","STRONG PERFORMANCE","TARGETED","PROGRESS","LEADERSHIP","NET PROFIT","NEW ORDER","BREAKOUT","UPGRADE","MERGER","BUYBACK","DIVIDEND"]
-            negative_kw = ["LOSS","DOWNGRADE","NEGATIVE","NON-COMPLIANCE","LAWSUIT","CONCERN","BORDER","VOLATILITY","DECREASE","SETTLEMENT","ISSUE","CHALLENGES","WRITE-DOWN","SLOWDOWN"]
+                t_idx, type_idx, subj_idx, date_idx = 0,1,2,3
+            last_rows = stock_master["rows"][-120:]
+            stocks = []
+            keywords = []
+            for r in last_rows:
+                if len(r) > type_idx:
+                    typ = str(r[type_idx]).upper()
+                    if "STOCK_TICKER" in typ or (len(r) > t_idx and str(r[t_idx]).strip() and "GENERAL" not in str(r[t_idx]).upper()):
+                        stocks.append(r)
+                    if "KEYWORD" in typ or "MARKET" in typ:
+                        keywords.append(r)
+            print(f"[SENTIMENT] Stock_Master parsed: {len(stocks)} stock rows, {len(keywords)} keyword rows")
+            positive_kw = ["EXCEEDS","POSITIVE","STRONG PERFORMANCE","TARGETED","PROGRESS","LEADERSHIP","NET PROFIT","NEW ORDER","BREAKOUT","UPGRADE","MERGER","BUYBACK","DIVIDEND","CEMENT","APPROVAL","TARGET","REPORTS"]
+            negative_kw = ["LOSS","DOWNGRADE","NEGATIVE","NON-COMPLIANCE","LAWSUIT","CONCERN","BORDER","VOLATILITY","DECREASE","SETTLEMENT","ISSUE","CHALLENGES","WRITE-DOWN","SLOWDOWN","DEBT","DISASTER","Q2"]
             regulatory_kw = ["SEBI","REGULATORY","BREAKING NEWS"]
-            keyword_blob = " ".join([str(r[t_idx]) + " " + str(r[subj_idx]) for r in keywords[-30:]]).upper()
-            for r in stocks[-40:]:
+            keyword_blob = " ".join([str(r[t_idx]) + " " + (str(r[subj_idx]) if len(r) > subj_idx else "") for r in keywords[-30:]]).upper()
+            for r in stocks[-60:]:
                 if len(r) <= t_idx: continue
-                ticker = str(r[t_idx]).strip().upper()
-                if not ticker or ticker == "TICKER" or len(ticker) < 2 or ticker == "GENERAL": continue
+                ticker = str(r[t_idx]).strip().upper().replace(" ", "").replace("&","")
+                if not ticker or ticker == "TICKER" or len(ticker) < 2 or ticker == "GENERAL" or ticker == "STOCKS": continue
+                # Extract ticker from format like "SAREGAMA (2026-11-04)"
+                m = re.search(r'([A-Z]{2,15})', ticker)
+                if m:
+                    ticker = m.group(1)
                 norm = normalize_sym(ticker)
                 if norm in new_cache: continue
                 score = 0
                 k_match = ""
                 subj_upper = str(r[subj_idx]).upper() if len(r) > subj_idx else ""
+                combined_text = (keyword_blob + " " + subj_upper).upper()
                 for kw in positive_kw:
-                    if kw in keyword_blob or kw in subj_upper:
+                    if kw in combined_text:
                         score += 1
-                        k_match += kw + ","
+                        if kw not in k_match:
+                            k_match += kw + ","
                 for kw in negative_kw:
-                    if kw in keyword_blob or kw in subj_upper:
+                    if kw in combined_text:
                         score -= 1
-                        k_match += kw + ","
+                        if kw not in k_match:
+                            k_match += kw + ","
                 for kw in regulatory_kw:
-                    if kw in keyword_blob:
+                    if kw in combined_text and kw not in k_match:
                         k_match += kw + ","
-                call = "BUY" if score >=2 else ("SELL" if score <= -2 else "HOLD")
+                call = "BUY" if score >=1 else ("SELL" if score <= -1 else "HOLD")
+                # Override: if LAWSUIT/NON-COMPLIANCE/DEBT/Q2 negative -> SELL
+                if any(x in combined_text for x in ["LAWSUIT","NON-COMPLIANCE","DISASTER","DEBT"]):
+                    call = "SELL"
+                elif any(x in combined_text for x in ["CEMENT","APPROVAL","TARGET","REPORTS","NEW ORDER","BREAKOUT"]):
+                    if call != "SELL":
+                        call = "BUY"
                 new_cache[norm] = {"call": call, "reason": f"Keyword sync: {k_match[:100]} | Subj: {subj_upper[:80]}", "keyword_match": k_match[:120], "score": score, "source": "Stock_Master", "orig": ticker}
         if new_cache:
             SENTIMENT_CACHE = new_cache
-            SENTIMENT_STATUS = f"OK - {len(new_cache)} tickers at {now_ist().strftime('%H:%M:%S')}"
-            print(f"[SENTIMENT] {SENTIMENT_STATUS}")
+            SENTIMENT_STATUS = f"OK - {len(new_cache)} tickers at {now_ist().strftime('%H:%M:%S')} | Synced:{len(synced['rows']) if synced else 0} Master:{len(stock_master['rows']) if stock_master else 0}"
+            print(f"[SENTIMENT] {SENTIMENT_STATUS} - {list(new_cache.keys())[:15]}")
         else:
-            SENTIMENT_STATUS = f"No data - Sheet empty? at {now_ist().strftime('%H:%M:%S')}"
+            SENTIMENT_STATUS = f"No data - Sheet empty or not shared Anyone with link? Synced:{len(synced['rows']) if synced else 0} Master:{len(stock_master['rows']) if stock_master else 0} at {now_ist().strftime('%H:%M:%S')}"
+            print(f"[SENTIMENT] {SENTIMENT_STATUS}")
     except Exception as e:
         SENTIMENT_STATUS = f"Error: {e}"
         print(f"[SENTIMENT] {SENTIMENT_STATUS}")
+        import traceback; traceback.print_exc()
+
 
 def fetch_one_nse(orig: str):
     try:
