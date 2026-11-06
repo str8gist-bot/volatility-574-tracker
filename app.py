@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template_string
-from flask_cors import CORS
+# flask_cors removed - not needed, using manual headers
 
 try:
     import docx
@@ -27,7 +27,7 @@ except ImportError:
     HAS_YF = False
 
 app = Flask(__name__)
-CORS(app)
+# CORS disabled - using manual headers
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore")
 
