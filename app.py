@@ -51,7 +51,8 @@ SENTIMENT_RAW = ""
 LAST_SENTIMENT_FETCH = 0
 SENTIMENT_STATUS = "Not fetched"
 RENDER_LAST_SYNC = ""  # V11: Render actual fetch time, not Brown J 08:35 stale time
-GEMINI_STATUS = "unknown"  # V11: real Gemini status
+GEMINI_STATUS = "unknown"
+WORKER_ID = f"worker-{os.getpid()}"  # V12: debug 2-worker loop  # V11: real Gemini status
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -412,7 +413,7 @@ def fetch_all_realtime() -> float:
     today_str = now.strftime("%Y-%m-%d")
     if is_open and today_str != LAST_TRADING_DATE and now.hour == 9 and now.minute < 25:
         PRICE_HISTORY_1M.clear(); PRICE_HISTORY_3M.clear(); PRICE_HISTORY_15M.clear()
-        PEAK_PRICE_STORE.clear(); PREV_1M_STORE.clear(); LAST_CMP_STORE.clear(); NSE_LIVE_CACHE.clear()
+        PEAK_PRICE_STORE.clear(); PREV_1M_STORE.clear(); LAST_CMP_STORE.clear(); # V12: NEVER clear cache after close - keep last 60 for display
         LAST_TRADING_DATE = today_str
     batch_size = 90
     n_batches = max(1, (len(WATCHLIST_ORIG) + batch_size - 1) // batch_size)
@@ -591,7 +592,7 @@ def get_data():
             if k not in live_dict and isinstance(v, dict):
                 live_dict[k] = v
         
-        return jsonify({"results": results, "live": live_dict, "render_last_sync": RENDER_LAST_SYNC, "gemini_status": GEMINI_STATUS, "brown_j_url": "https://script.google.com/macros/s/AKfycbyxXNDulj3AkXEF778HaW95kULlrFh47_tYexxHAmX8-IRznWjlYdC-XmkOEhvQPoJt/exec", "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
+        return jsonify({"results": results, "live": live_dict, "render_last_sync": RENDER_LAST_SYNC, "worker_id": WORKER_ID, "market_closed_keep_cache": True, "gemini_status": GEMINI_STATUS, "brown_j_url": "https://script.google.com/macros/s/AKfycbyxXNDulj3AkXEF778HaW95kULlrFh47_tYexxHAmX8-IRznWjlYdC-XmkOEhvQPoJt/exec", "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
     except Exception as e:
         return jsonify({"results": [], "error": str(e), "watchlist_size": len(WATCHLIST_ORIG)})
 
@@ -610,7 +611,7 @@ def sentiment_api():
         "status": SENTIMENT_STATUS, 
         "raw": SENTIMENT_RAW[:2000], 
         "count": len(SENTIMENT_CACHE),
-        "last_fetch_ts": LAST_SENTIMENT_FETCH, "render_last_sync": RENDER_LAST_SYNC, "gemini_status": GEMINI_STATUS,
+        "last_fetch_ts": LAST_SENTIMENT_FETCH, "render_last_sync": RENDER_LAST_SYNC, "worker_id": WORKER_ID, "market_closed_keep_cache": True, "gemini_status": GEMINI_STATUS,
         "sheet_id": CONFIG["SHEET_ID"],
         "debug": f"Fetched at {now_ist().strftime('%H:%M:%S')} IST"
     })
@@ -667,7 +668,7 @@ async function refresh(){
           d.results = Object.values(d.live).map(v => ({stock: v.ticker||v.stock, price: v.price, one_min_chg: v['1m%'], three_min_chg: v['3m%'], fifteen_min_chg: v['15m%'], chg_open: v['ChgOpen%'], volatility: v['Volatility%'], rvol: v.RVOL, vol_chg: v['VolChg%'], sentiment_call: v.call, reason: v.reason, risk: v.risk, updated: v.updated}));
           d.cache_size = Object.keys(d.live).length;
         }
-        if(!d.results || !d.results.length){ tbody.innerHTML = '<tr><td colspan="13">Fetching… Cache '+d.cache_size+' | Watchlist '+d.watchlist_size+' | '+(d.nse_time||'')+'</td></tr>'; return; }
+        if(!d.results || !d.results.length){ tbody.innerHTML = '<tr><td colspan="13">Loading… Cache '+d.cache_size+' | Watchlist '+d.watchlist_size+' | '+(d.nse_time||'')+'</td></tr>'; return; }
   let sorted=[...d.results]; if(sortCol){ sorted.sort((a,b)=> asc ? (a[sortCol]||0)-(b[sortCol]||0) : (b[sortCol]||0)-(a[sortCol]||0)); }
   tbody.innerHTML = sorted.map(i=>{
    let techBadge=''; if(i.is_false_breakout) techBadge='<span class="badge-danger">🛑 FALSE BREAKOUT</span>'; else if(i.is_momentum_drop) techBadge='<span class="badge-warning">⚠ MOMENTUM DROP</span>'; else if(i.is_healthy_pullback) techBadge='<span class="badge-info">🔍 PULLBACK</span>'; else if(i.is_15m_breakout) techBadge=`<span class="badge-15m">⚡ 15M +${i.fifteen_min_chg}%</span>`; if(i.is_1m_gt_1pct) techBadge+=` <span class="badge-1m-surge">🔥 1m >1%</span>`;
