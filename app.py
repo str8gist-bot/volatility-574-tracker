@@ -50,6 +50,8 @@ SENTIMENT_CACHE = {}
 SENTIMENT_RAW = ""
 LAST_SENTIMENT_FETCH = 0
 SENTIMENT_STATUS = "Not fetched"
+RENDER_LAST_SYNC = ""  # V11: Render actual fetch time, not Brown J 08:35 stale time
+GEMINI_STATUS = "unknown"  # V11: real Gemini status
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -178,6 +180,15 @@ def fetch_sheet_tab_gviz(sheet_id, tab_name):
     return None
 
 def fetch_sentiment_from_sheet():
+    global RENDER_LAST_SYNC, GEMINI_STATUS, SENTIMENT_STATUS
+    from datetime import datetime as _dt
+    try:
+        RENDER_LAST_SYNC = _dt.now(IST).strftime('%a %b %d %Y %H:%M:%S IST')
+    except:
+        RENDER_LAST_SYNC = time.strftime('%a %b %d %Y %H:%M:%S IST')
+    # Check if Gemini key present
+    _key = os.getenv('GEMINI_API_KEY', '')
+    GEMINI_STATUS = 'OK - key present' if _key and len(_key) > 10 else 'MISSING - heuristic fallback (set GEMINI_API_KEY in Render Environment)'
     global SENTIMENT_CACHE, SENTIMENT_RAW, LAST_SENTIMENT_FETCH, SENTIMENT_STATUS
     now = time.time()
     if now - LAST_SENTIMENT_FETCH < 30:  # faster retry 30s for V3
@@ -580,7 +591,7 @@ def get_data():
             if k not in live_dict and isinstance(v, dict):
                 live_dict[k] = v
         
-        return jsonify({"results": results, "live": live_dict, "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
+        return jsonify({"results": results, "live": live_dict, "render_last_sync": RENDER_LAST_SYNC, "gemini_status": GEMINI_STATUS, "brown_j_url": "https://script.google.com/macros/s/AKfycbyxXNDulj3AkXEF778HaW95kULlrFh47_tYexxHAmX8-IRznWjlYdC-XmkOEhvQPoJt/exec", "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
     except Exception as e:
         return jsonify({"results": [], "error": str(e), "watchlist_size": len(WATCHLIST_ORIG)})
 
@@ -599,7 +610,7 @@ def sentiment_api():
         "status": SENTIMENT_STATUS, 
         "raw": SENTIMENT_RAW[:2000], 
         "count": len(SENTIMENT_CACHE),
-        "last_fetch_ts": LAST_SENTIMENT_FETCH,
+        "last_fetch_ts": LAST_SENTIMENT_FETCH, "render_last_sync": RENDER_LAST_SYNC, "gemini_status": GEMINI_STATUS,
         "sheet_id": CONFIG["SHEET_ID"],
         "debug": f"Fetched at {now_ist().strftime('%H:%M:%S')} IST"
     })
@@ -640,7 +651,9 @@ function toggleSort(c){ if(sortCol===c) asc=!asc; else{sortCol=c; asc=false;} re
 async function refresh(){
  try{
   const r = await fetch('/api/data'); const d = await r.json();
-  document.getElementById('time').innerText = d.nse_time || '–';
+  document.getElementById('time').innerText = d.render_last_sync || d.nse_time || '–';
+  // V11: show Render sync, not Brown J 08:35 stale
+  if(d.gemini_status){ let g=document.getElementById('sentRaw'); if(g) g.innerText = d.gemini_status + ' | ' + (d.sentiment_raw||'').substring(0,120); }
   document.getElementById('market').innerText = d.market_status || '–';
   document.getElementById('wsize').innerText = d.watchlist_size || 0;
   document.getElementById('cache').innerText = d.cache_size || 0;
