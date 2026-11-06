@@ -556,7 +556,31 @@ def get_data():
             if sent.get("call","") in ("BUY","STRONG BUY","BUY DIP","STRONG SELL","SELL"):
                 off_results.append({"stock": sent.get("orig", norm), "norm": norm, "cmp": round(cmp,2) if cmp else 0, "change_open": round(chg_open,2), "rvol": round(rvol,2), "sentiment_call": sent.get("call",""), "sentiment_kw": sent.get("keyword_match","") or sent.get("reason","")[:80], "sentiment_reason": sent.get("reason",""), "source": sent.get("source","")})
         off_results.sort(key=lambda x: (0 if "BUY" in x["sentiment_call"] else 1, x["stock"]))
-        return jsonify({"results": results, "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
+        
+        # V10 COMPAT: build live dict for PWA frontend that expects d.live
+        live_dict = {}
+        for r in results:
+            live_dict[r.get("stock", r.get("ticker",""))] = {
+                "ticker": r.get("stock", r.get("ticker","")),
+                "price": r.get("price", 0),
+                "1m%": r.get("one_min_chg", r.get("1m%", 0)),
+                "3m%": r.get("three_min_chg", r.get("3m%", 0)),
+                "15m%": r.get("fifteen_min_chg", r.get("15m%", 0)),
+                "ChgOpen%": r.get("chg_open", r.get("ChgOpen%", 0)),
+                "Volatility%": r.get("volatility", r.get("Volatility%", 0)),
+                "RVOL": r.get("rvol", r.get("RVOL", 0)),
+                "VolChg%": r.get("vol_chg", r.get("VolChg%", 0)),
+                "call": r.get("sentiment_call", r.get("call","HOLD")),
+                "reason": r.get("reason",""),
+                "risk": r.get("risk","Medium"),
+                "updated": r.get("updated","")
+            }
+        # Also include cache-only tickers not in current batch
+        for k, v in NSE_LIVE_CACHE.items():
+            if k not in live_dict and isinstance(v, dict):
+                live_dict[k] = v
+        
+        return jsonify({"results": results, "live": live_dict, "off_watchlist": off_results, "nse_time": NSE_LAST_FETCH, "market_status": MARKET_STATUS, "is_open": is_market_open(), "cache_size": len(NSE_LIVE_CACHE), "watchlist_size": len(WATCHLIST_ORIG), "using_fallback": USE_YF_FALLBACK, "sentiment_status": SENTIMENT_STATUS, "sentiment_count": len(SENTIMENT_CACHE), "sentiment_raw": SENTIMENT_RAW[:1000]})
     except Exception as e:
         return jsonify({"results": [], "error": str(e), "watchlist_size": len(WATCHLIST_ORIG)})
 
@@ -625,7 +649,12 @@ async function refresh(){
   document.getElementById('sentCount').innerText = d.sentiment_count || 0;
   document.getElementById('sentRaw').innerText = (d.sentiment_raw || '').substring(0,180);
   const tbody = document.getElementById('body');
-  if(!d.results || !d.results.length){ tbody.innerHTML = '<tr><td colspan="13">Fetching… Cache '+d.cache_size+' | Watchlist '+d.watchlist_size+' | '+(d.nse_time||'')+'</td></tr>'; return; }
+  if((!d.results || !d.results.length) && d.live){
+          // V10 fallback: convert live dict to results array
+          d.results = Object.values(d.live).map(v => ({stock: v.ticker||v.stock, price: v.price, one_min_chg: v['1m%'], three_min_chg: v['3m%'], fifteen_min_chg: v['15m%'], chg_open: v['ChgOpen%'], volatility: v['Volatility%'], rvol: v.RVOL, vol_chg: v['VolChg%'], sentiment_call: v.call, reason: v.reason, risk: v.risk, updated: v.updated}));
+          d.cache_size = Object.keys(d.live).length;
+        }
+        if(!d.results || !d.results.length){ tbody.innerHTML = '<tr><td colspan="13">Fetching… Cache '+d.cache_size+' | Watchlist '+d.watchlist_size+' | '+(d.nse_time||'')+'</td></tr>'; return; }
   let sorted=[...d.results]; if(sortCol){ sorted.sort((a,b)=> asc ? (a[sortCol]||0)-(b[sortCol]||0) : (b[sortCol]||0)-(a[sortCol]||0)); }
   tbody.innerHTML = sorted.map(i=>{
    let techBadge=''; if(i.is_false_breakout) techBadge='<span class="badge-danger">🛑 FALSE BREAKOUT</span>'; else if(i.is_momentum_drop) techBadge='<span class="badge-warning">⚠ MOMENTUM DROP</span>'; else if(i.is_healthy_pullback) techBadge='<span class="badge-info">🔍 PULLBACK</span>'; else if(i.is_15m_breakout) techBadge=`<span class="badge-15m">⚡ 15M +${i.fifteen_min_chg}%</span>`; if(i.is_1m_gt_1pct) techBadge+=` <span class="badge-1m-surge">🔥 1m >1%</span>`;
